@@ -189,7 +189,44 @@ radare2's auto-analysis leaves many `(nofunc)` gaps. This is the point where the
 maintainer's existing Ghidra map (named functions) is decisive. **Handoff with the
 map + syscall proof + the no-IPv4 anomaly above.**
 
+## ★ THE ANSWER: it's the host network environment (not Wine/kernel/driver/Radmin)
+
+Ran the SAME AppImage inside an isolated **network namespace** (same kernel 7.1.3,
+same bundled Wine, NAT'd internet). **It works fully**: reaches `ready`, GUI shows
+"En línea", created a network, a peer joined, chat works. In the netns the service
+resolves `proxy.radminte.com` / `fail.radminte.com` and connects to them on port
+**17301** (OVH IPs 57.128.187.188 / 148.113.190.78 / 198.244.203.247), exchanging
+data — the exact step that never happens on the host.
+
+So the hang is a **host network-stack conflict**, not the app. On the host the
+service never even resolves radminte / never opens `:17301` — it stalls before the
+connector, and only on the host.
+
+**Ruled OUT on the host (each retried, all still hang):**
+- Extra interfaces — brought down AND deleted (docker0, br-*, vmnet1/8, tailscale0);
+  host reduced to `enp10s0` + `radminvpn0` like the netns. Still hangs.
+- DNS resolver — forced `1.1.1.1`/`8.8.8.8` instead of systemd-resolved `127.0.0.53`.
+  Still hangs (and Radmin still never even queries radminte).
+- `ufw` — disabled entirely. Still hangs.
+- Prefix state — FRESH install on the host (new RID `183291492`). Still hangs. This
+  removes the confound that netns runs always used a fresh prefix: fresh+host fails,
+  fresh+netns works ⇒ it's the environment.
+- Routing — `ip route get` to the proxies is correct (via `enp10s0`, right source).
+- Tailscale routing — its fwmark rules only touch Tailscale's own marked traffic;
+  the proxies aren't in `100.64/10`. Not diverting Radmin.
+
+**NOT yet tested (top remaining suspect):** `net.ipv4.conf.*.rp_filter` — host `=1`
+(strict), a fresh netns defaults to `0`. With the `26.0.0.0/8` on-link route plus
+multiple interfaces, strict RPF can drop the return path of a connectivity probe,
+which would fit "service never proceeds to dial". Script: `radmin-rpfilter-test.sh`.
+Other candidates: residual netfilter chains left by docker/libvirt/tailscale that
+`ufw disable` doesn't flush, or a CachyOS net sysctl; the netns gets kernel defaults.
+
+**Working solution today:** run Radmin inside the netns (`radmin-netns-test.sh`).
+
 ## Upstream
 
 Issue #16 (`ayozetr`): reported the never-ready + the rc4 `lib.sh` packaging bug +
-the `lib.sh` outbound-grep bug + ufw/socket findings. Awaiting maintainer.
+the `lib.sh` outbound-grep bug + ufw/socket findings. **Update to send:** it is NOT
+a Radmin/Wine bug — the app works in a clean netns on the same kernel/Wine; the
+"never ready" is a host network-stack conflict (see section above).
