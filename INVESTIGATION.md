@@ -106,6 +106,39 @@ hook. Result: GAA logged once (OperStatus=up, no IPv4); connect hooks never fire
 9. **Next: needs RE of `RvControlSvc.exe` to find why it skips the dial** — hand
    the syscall proof to the maintainer, or static-analyse the binary ourselves.
 
+## Static analysis of RvControlSvc.exe (experiment B, objdump)
+
+32-bit PE, image base `0x400000` (so IDA addr = `0x400000 + RVA`, matching the
+hook's offsets). Tools: only `objdump`/`strings` (no radare2/ghidra).
+
+**Strings that map the state machine** (UTF-16 in `.rdata`, VA = off−0xfa200+0x4fb000):
+- `Virtual network adapter opened / enabled` — `0x501b50` (enabled)
+- `Registered as #%llu, %hs/%hs` — `0x501b90`
+- **`Virtual network adapter ready` — `0x501bcc`** (the line we never get)
+- `Failed to enable virtual adapter (err:0x%llx)` / `Failed to setup virtual adapter … may be not operable`
+- Relay path: `InternetConnectW`, `TcpRelay`, `ROLClient_Connect/ContinueConnect`,
+  `SHelper_RSession_*`. **→ the session/relay dials via WinINet, not raw winsock**
+  (explains why the ws2_32 `connect` hook and the syscall trace saw no dial).
+- RTTI message classes: `CSetupAdapter@task`, **`CDeviceReady@msg`**,
+  `CConnectedToSlave`, **`CConnectToRosFailed`**, `CDisconnectedFromRos`,
+  `CGuiConnected/Disconnected` → there's a **ROS (Radmin Online Server)** connect.
+
+**The logger/dispatcher** (`~0x443260`–`0x44357e`): a jump-table switch on the
+message type at `[esi+0x34]` (`dec ecx; cmp ecx,0x19; ja …; movzx ecx,[ecx+0x443598];
+jmp [ecx*4+0x443584]`). Each case logs its state string via the log fn at `0x43b930`.
+`"…ready"` (`0x44352c`/`push 0x501bcc`) is the **`CDeviceReady` case** — a separate
+branch from `Registered` (which ends `ret 8` at `0x443529`). So "ready" is emitted
+only when a device-ready message is *dispatched*, which never happens here.
+
+**Conclusion of B:** confirmed the architecture — `ready` is gated on a
+`CDeviceReady` message that is never posted, and the ROS/relay connect (WinINet)
+is never attempted (matches the syscall trace). Pinpointing *what posts
+CDeviceReady / what precondition gates the ROS connect* needs xref tracing
+(radare2 `axt`, or the maintainer's existing Ghidra map). objdump-only can't
+cross-reference the message constructor efficiently. **This is the natural handoff
+point to the maintainer** — the findings above localize it to the
+registered→device-ready→ROS-connect transition.
+
 ## Upstream
 
 Issue #16 (`ayozetr`): reported the never-ready + the rc4 `lib.sh` packaging bug +
