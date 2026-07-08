@@ -157,11 +157,37 @@ strace). The relay call chain, all never reached during the hang:
 
 **Where B lands:** the bug is upstream of the connector thread — the service never
 drives the `CConnector`/`ROLClient_Connect` path that would HTTP-POST to ROS, so no
-`CDeviceReady`, so no `ready`. Tracing the exact gate from here means walking the
-`CConnector` lifecycle / connector-manager thread through template-heavy C++
-(`TSimpleThread`, `TIterableHash`) with no symbols — the point where the maintainer's
-existing Ghidra map (named functions) is far more efficient. **Handoff with the chain
-above.**
+`CDeviceReady`, so no `ready`.
+
+### Function map (RVA/IDA addr = base 0x400000), for the maintainer / future work
+
+| Addr | What it is |
+|---|---|
+| `fcn.00443220` | **state logger/dispatcher** — jump-table switch on msg type `[esi+0x34]`; logs opened/enabled/`Registered`(0x443502)/`ready`(0x44352f) |
+| `method ControlSvc::CControlSvc…virtual_4` @ `0x4407ce` | calls the setup-adapter task |
+| `fcn.004435c0` | **CSetupAdapter task run** — calls setup `fcn.00461b60`; error strings `[req:%u] Failed`, `Failed to enable virtual adapter`, `Registration failed` (none logged in our runs); then a **boolean-gated post-setup sequence** (`fcn.00439870`, `fcn.0043bdc0`, `fcn.00446450/446530`, `fcn.00430cb0`, `fcn.0044f030`) |
+| `fcn.00461b60` | adapter setup; error-code checks (23/37/6); logs `Failed to setup virtual adapter … may be not operable` (**not** hit here) |
+| `fcn.00402f30` → `fcn.00402ea0` | **posts `CDeviceReady`** (inlined `CAbstractQueueableMessage` template + enqueue `fcn.00464ce0`); reached only downstream of a successful ROS connect. Caller chain climbs into unbounded template thunks (`(nofunc) 0x402e87…`). |
+| `fcn.004c5260` | ROS relay: `InternetOpenW→InternetConnectW→HttpOpenRequestW→HttpSendRequestW` |
+| `fcn.004c50e0` ← `fcn.004c1ad0` ← `(nofunc) 0x4bf60c` | HTTP-POST builder ← ROS comm ← `CConnector` thread (`TSimpleThread<CConnector>`) |
+| `fcn.004c0940` @ `0x4c0b95`, `fcn.004d4629` @ `0x4d4672` | the two `CreateThread` sites |
+
+### Concrete anomaly worth flagging (candidate gate)
+
+`GetAdaptersAddresses` (via our hook) reports the adapter **`OperStatus=1` (UP)** but
+with **no IPv4 unicast** — only the IPv6 link-local (`unicast=1(none)`). The Radmin
+`26.x` address is never bound to the Linux TAP at the interface level. If the
+post-setup path (or the connector) waits for the adapter to carry its assigned IPv4
+before proceeding, that would explain the stall. Unconfirmed, but it's the one
+environment-specific discrepancy we can see from outside the binary.
+
+### Honest wall
+
+Pinpointing the exact precondition means walking template-heavy, symbol-less C++
+(`TSimpleThread`, `TIterableHash`, inlined queueable-message templates) where
+radare2's auto-analysis leaves many `(nofunc)` gaps. This is the point where the
+maintainer's existing Ghidra map (named functions) is decisive. **Handoff with the
+map + syscall proof + the no-IPv4 anomaly above.**
 
 ## Upstream
 
