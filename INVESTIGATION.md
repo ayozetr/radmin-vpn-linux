@@ -44,8 +44,31 @@ the driver (`IOCTL STATUS`/`FILTER`) forever and never logs
 The service never reaches the outbound session/relay dial step during the polling
 window (kernel confirms no socket). The maintainer says `ready` is gated on that
 outbound connection completing. So it's stalling *before* the dial, for a reason
-still internal to the closed `RvControlSvc.exe`. Open question: does it ever dial
-at all (even briefly, early)? → answered by strace (below).
+still internal to the closed `RvControlSvc.exe`.
+
+## strace result (definitive — experiment A)
+
+Patched `run.sh` (in the extracted AppImage only) to launch the service under
+`strace -f --seccomp-bpf -e trace=network -o /tmp/radmin_strace.log`. Over the
+full 32s window (54795 syscall lines captured):
+
+- `socket()`: **16× AF_UNIX** (Wine IPC), **1× AF_INET**, **1× AF_INET6** (both TCP).
+- `connect()`: **18 total, ZERO to an external address.** Only non-UNIX connects
+  are to `127.0.0.1:631` / `::1:631` (CUPS — noise).
+- `sendto`/`sendmsg` to a non-local address: **ZERO** (no outbound UDP either).
+
+**Conclusion:** at the syscall level, API-agnostic, the service performs **no
+external network I/O at all** during the hang. It does not attempt the
+session/relay connection — it's not blocked, it never dials. `Registered as
+#… 26.x` is replayed from the cached registration (same RID every run; no network
+this run). Corroborates the `/proc` finding (RvControlSvc: 0 TCP/UDP). Caveat:
+`strace -f` may not follow every Wine subprocess, but the `/proc` probe already
+confirmed `RvControlSvc.exe` specifically had 0 TCP/UDP sockets.
+
+**Open question (now RE-territory):** *why* does the service never reach the dial
+step? That needs static analysis of `RvControlSvc.exe` (the maintainer's domain).
+Candidate: a state/precondition check between "registered" and "dial session"
+that silently fails under Wine on this setup.
 
 ## Build / iterate (this branch)
 
@@ -78,7 +101,10 @@ hook. Result: GAA logged once (OperStatus=up, no IPv4); connect hooks never fire
 5. rc4 patched → timeout 33s; captured sockets: no service socket during hang.
 6. `/proc` probe → RvControlSvc 3 sockets, 0 TCP/UDP (2-method confirmation).
 7. Instrumented hook → OperStatus=up/no-IPv4; service doesn't import ws2_32 connect.
-8. **Next: strace `-f -e trace=network` on the wine chain** (see below).
+8. strace `-f -e trace=network` on the wine chain → **zero external network I/O**
+   during the hang (see "strace result"). Service never dials the relay.
+9. **Next: needs RE of `RvControlSvc.exe` to find why it skips the dial** — hand
+   the syscall proof to the maintainer, or static-analyse the binary ourselves.
 
 ## Upstream
 
