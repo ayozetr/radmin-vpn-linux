@@ -349,6 +349,27 @@ static ULONG WINAPI hook_GetAdaptersAddresses(
         /* Point at read-only string literals: caller frees the whole adapter
          * info buffer in one shot and never touches these fields individually,
          * so we avoid a per-call HeapAlloc that was never freed. */
+        /* [diag] log what the service sees for the adapter each GAA call */
+        {
+            char b[160], ips[64] = "none";
+            int nu = 0;
+            PIP_ADAPTER_UNICAST_ADDRESS u;
+            for (u = cur->FirstUnicastAddress; u; u = u->Next) {
+                nu++;
+                if (nu == 1 && u->Address.lpSockaddr &&
+                    u->Address.lpSockaddr->sa_family == AF_INET) {
+                    unsigned char *a = (unsigned char *)
+                        &((struct sockaddr_in *)u->Address.lpSockaddr)->sin_addr;
+                    snprintf(ips, sizeof(ips), "%u.%u.%u.%u",
+                             a[0], a[1], a[2], a[3]);
+                }
+            }
+            snprintf(b, sizeof(b),
+                "[diag] GAA radminvpn0: OperStatus=%d IfType=%lu unicast=%d(%s)",
+                (int)cur->OperStatus, (unsigned long)cur->IfType, nu, ips);
+            dbg(b);
+        }
+
         cur->Description  = (WCHAR *)RADMIN_DESC;
         cur->FriendlyName = (WCHAR *)RADMIN_FRIENDLY;
 
@@ -373,6 +394,52 @@ static LONG WINAPI hook_RegSetKeySecurity(HKEY hKey, SECURITY_INFORMATION si,
     (void)hKey; (void)si; (void)psd;
     dbg("RegSetKeySecurity: blocked (Wine SYSTEM SID workaround)");
     return ERROR_SUCCESS;
+}
+
+/* ====== ws2_32 connect tracing (diagnostic) ======
+ *
+ * Logs every outbound connect the service makes directly through its own
+ * ws2_32 import, with timestamp + destination. Lets us see whether/when the
+ * service dials the relay and to where. (Only catches direct imports; misses
+ * connects made from inside winhttp/schannel — but the kernel /proc view
+ * already covers steady state.) */
+
+static int (WSAAPI *real_connect)(SOCKET, const struct sockaddr *, int) = NULL;
+static int (WSAAPI *real_WSAConnect)(SOCKET, const struct sockaddr *, int,
+    LPWSABUF, LPWSABUF, LPQOS, LPQOS) = NULL;
+
+static void log_conn(const char *tag, const struct sockaddr *name)
+{
+    char buf[128];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    if (name && name->sa_family == AF_INET) {
+        const struct sockaddr_in *si = (const struct sockaddr_in *)name;
+        unsigned char *a = (unsigned char *)&si->sin_addr;
+        snprintf(buf, sizeof(buf),
+            "[diag] %02d:%02d:%02d.%03d %s -> %u.%u.%u.%u:%u",
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, tag,
+            a[0], a[1], a[2], a[3], (unsigned)ntohs(si->sin_port));
+    } else {
+        snprintf(buf, sizeof(buf), "[diag] %02d:%02d:%02d.%03d %s -> family=%d",
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, tag,
+            name ? name->sa_family : -1);
+    }
+    dbg(buf);
+}
+
+static int WSAAPI hook_connect(SOCKET s, const struct sockaddr *name, int namelen)
+{
+    log_conn("connect()", name);
+    return real_connect ? real_connect(s, name, namelen) : SOCKET_ERROR;
+}
+
+static int WSAAPI hook_WSAConnect(SOCKET s, const struct sockaddr *name, int namelen,
+    LPWSABUF ci, LPWSABUF co, LPQOS sq, LPQOS gq)
+{
+    log_conn("WSAConnect()", name);
+    return real_WSAConnect
+        ? real_WSAConnect(s, name, namelen, ci, co, sq, gq) : SOCKET_ERROR;
 }
 
 /* ====== IAT patching ====== */
@@ -437,6 +504,44 @@ static void patch_iat(HMODULE mod)
                         dbg("VirtualProtect restore failed for RegSetKeySecurity");
                     }
                     dbg("hooked RegSetKeySecurity");
+                }
+            }
+        }
+
+        if (_stricmp(dll, "WS2_32.DLL") == 0) {
+            orig  = (PIMAGE_THUNK_DATA)((BYTE *)mod + imp->OriginalFirstThunk);
+            thunk = (PIMAGE_THUNK_DATA)((BYTE *)mod + imp->FirstThunk);
+            for (; orig->u1.AddressOfData; orig++, thunk++) {
+                void *hookfn = NULL;
+                const char *nm = NULL;
+                if (orig->u1.Ordinal & IMAGE_ORDINAL_FLAG) {
+                    /* ws2_32 is usually imported by ordinal: connect=4, WSAConnect=30 */
+                    WORD ord = (WORD)(orig->u1.Ordinal & 0xFFFF);
+                    if (ord == 4) {
+                        hookfn = (void *)hook_connect; nm = "connect#4";
+                        real_connect = (void *)thunk->u1.Function;
+                    } else if (ord == 30) {
+                        hookfn = (void *)hook_WSAConnect; nm = "WSAConnect#30";
+                        real_WSAConnect = (void *)thunk->u1.Function;
+                    }
+                } else {
+                    PIMAGE_IMPORT_BY_NAME bn =
+                        (PIMAGE_IMPORT_BY_NAME)((BYTE *)mod + orig->u1.AddressOfData);
+                    if (strcmp(bn->Name, "connect") == 0) {
+                        hookfn = (void *)hook_connect; nm = "connect";
+                        real_connect = (void *)thunk->u1.Function;
+                    } else if (strcmp(bn->Name, "WSAConnect") == 0) {
+                        hookfn = (void *)hook_WSAConnect; nm = "WSAConnect";
+                        real_WSAConnect = (void *)thunk->u1.Function;
+                    }
+                }
+                if (hookfn) {
+                    DWORD old;
+                    if (VirtualProtect(&thunk->u1.Function, sizeof(DWORD_PTR), PAGE_READWRITE, &old)) {
+                        thunk->u1.Function = (DWORD_PTR)hookfn;
+                        VirtualProtect(&thunk->u1.Function, sizeof(DWORD_PTR), old, &old);
+                        { char b[48]; snprintf(b, sizeof(b), "hooked %s", nm); dbg(b); }
+                    }
                 }
             }
         }
