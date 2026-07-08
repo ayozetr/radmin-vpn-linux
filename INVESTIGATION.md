@@ -130,14 +130,38 @@ jmp [ecx*4+0x443584]`). Each case logs its state string via the log fn at `0x43b
 branch from `Registered` (which ends `ret 8` at `0x443529`). So "ready" is emitted
 only when a device-ready message is *dispatched*, which never happens here.
 
-**Conclusion of B:** confirmed the architecture — `ready` is gated on a
-`CDeviceReady` message that is never posted, and the ROS/relay connect (WinINet)
-is never attempted (matches the syscall trace). Pinpointing *what posts
-CDeviceReady / what precondition gates the ROS connect* needs xref tracing
-(radare2 `axt`, or the maintainer's existing Ghidra map). objdump-only can't
-cross-reference the message constructor efficiently. **This is the natural handoff
-point to the maintainer** — the findings above localize it to the
-registered→device-ready→ROS-connect transition.
+**Conclusion of B (objdump):** confirmed the architecture — `ready` is gated on a
+`CDeviceReady` message; the ROS/relay connect (WinINet) is never attempted.
+
+## B continued (radare2 — xref tracing)
+
+Analyzed with `r2 -A`. The ROS relay/session runs over **WinINet HTTP** (not
+winsock — `WS2_32` only imports `socket`/`closesocket`, no `connect`, matching the
+strace). The relay call chain, all never reached during the hang:
+
+```
+[CConnector thread] → 0x4bf60c → fcn.004c1ad0  (ROS comm layer)
+                              → fcn.004c50e0  (builds the "POST" request)
+                              → fcn.004c5260  (InternetOpenW → InternetConnectW
+                                               → HttpOpenRequestW → HttpSendRequestW)
+```
+
+- Confirmed logger `fcn.00443220`: `push 0x501bcc` ("…ready") at `0x44352f` is the
+  `CDeviceReady` case; `Registered` at `0x443502` is a separate case (ends `ret 8`).
+- `InternetConnectW`/`InternetOpenW`/`HttpSendRequestW` are each called from exactly
+  one function: `fcn.004c5260`.
+- The connector is a **thread**: RTTI `.?AV?$TSimpleThread@VCConnector@ControlSvc@@`,
+  with `IConnectorObject`/`CConnector`/`CConnectorLog` and C-exports
+  `ROLClient_InitConnector` / `ROLClient_Connect` / `ROLClient_ShutdownConnector`.
+  Connectors are kept in a per-`CRid` hash map (`TIterableHash<…CRid…CConnector>`).
+
+**Where B lands:** the bug is upstream of the connector thread — the service never
+drives the `CConnector`/`ROLClient_Connect` path that would HTTP-POST to ROS, so no
+`CDeviceReady`, so no `ready`. Tracing the exact gate from here means walking the
+`CConnector` lifecycle / connector-manager thread through template-heavy C++
+(`TSimpleThread`, `TIterableHash`) with no symbols — the point where the maintainer's
+existing Ghidra map (named functions) is far more efficient. **Handoff with the chain
+above.**
 
 ## Upstream
 
