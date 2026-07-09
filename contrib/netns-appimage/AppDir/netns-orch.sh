@@ -41,7 +41,14 @@ trap cleanup EXIT INT TERM
 for p in $(pgrep -f "netns-orch.sh" 2>/dev/null); do
     [ "$p" = "$$" ] || kill -TERM "$p" 2>/dev/null   # let its cleanup() run
 done
-sleep 2
+# Wait for them to fully exit, so their cleanup (which removes the shared cache files)
+# finishes before we set anything up — otherwise the old one's teardown can wipe the
+# password this run just cached.
+for _ in $(seq 1 20); do
+    still=""; for p in $(pgrep -f "netns-orch.sh" 2>/dev/null); do [ "$p" = "$$" ] || still=1; done
+    [ -z "$still" ] && break
+    sleep 0.5
+done
 
 rm -f "$PWFILE"                     # start clean (no stale credential)
 
