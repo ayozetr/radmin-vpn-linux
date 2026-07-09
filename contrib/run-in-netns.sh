@@ -33,6 +33,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Radmin is single-instance (shared FIFOs in /tmp); kill any stray instance first.
+pkill -f "RvControlSvc|rvpn_launcher|tap_bridge" 2>/dev/null && sleep 1
+
 echo "[*] setting up isolated netns '$NS'..."
 ip netns del "$NS" 2>/dev/null ; ip link del "$VETH_H" 2>/dev/null ; sleep 0.3
 ip netns add "$NS"
