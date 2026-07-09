@@ -45,14 +45,20 @@ times out after ~33–63 s. Identical on v0.3.4 and rc3/rc4.
 - **Routing** — `ip route get` to the proxy IPs is correct (via `enp10s0`, right source).
 - **Tailscale routing** — its policy rules only match Tailscale's own fwmark'd traffic;
   the proxy IPs aren't in `100.64/10`.
+- **`rp_filter`** — set to `0` on all interfaces; still hangs.
+- **IPv6** — the host has no real IPv6 route out (only a Tailscale ULA `fd7a::`), and
+  the proxies resolve IPv4-only (`::ffff:` mapped); not an IPv6-first stall.
 
-## NOT yet tested (top remaining suspect)
+## Cause: holistic, not a single host knob
 
-- **`net.ipv4.conf.*.rp_filter`** — the host is `1` (strict); a fresh netns defaults to
-  `0`. With the `26.0.0.0/8` on-link route plus several interfaces, strict RPF is a
-  plausible cause. Test script: `radmin-rpfilter-test.sh`.
-- Other candidates: residual netfilter chains left by docker/libvirt/tailscale that
-  `ufw disable` doesn't flush; or a CachyOS net sysctl (the netns gets kernel defaults).
+After exhaustively flipping every identifiable host-network knob above (each still
+hangs), the netns's advantage appears **holistic** — a freshly-created network stack
+with kernel-default sysctls, an empty netfilter, and a minimal route/address set — and
+does not reduce to one setting we can toggle on the host. Likely remaining classes
+(untested, lower-probability): residual netfilter chains from docker/libvirt/tailscale
+that `ufw disable` doesn't flush, a CachyOS net sysctl, or Wine's connectivity/interface
+enumeration tripping on the host's complexity in a way removing one piece doesn't fix.
+The pragmatic outcome is to **run Radmin in the netns** (works reliably).
 
 ## Working solution today
 
