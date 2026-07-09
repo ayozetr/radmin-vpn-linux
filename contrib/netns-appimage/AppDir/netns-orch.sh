@@ -15,7 +15,7 @@ SUB=10.201.0 ; HIP=$SUB.1 ; NIP=$SUB.2
 
 # Where the caching askpass stores the sudo credential for this session (tmpfs, 0600).
 PWFILE="/run/user/$RUID/.radmin-sudo"
-# Flag file that keeps the "Preparando…" progress dialog alive; removing it closes it.
+# Flag file that keeps the "preparing" progress dialog alive; removing it closes it.
 PROGFLAG="/run/user/$RUID/.radmin-preparing"
 
 cleanup() {
@@ -108,7 +108,7 @@ ip netns exec "$NS" runuser -u "$RUSER" -- \
   runuser -u "$RUSER" -- env $GUIENV sh -c '
     ( while [ -e "'"$PROGFLAG"'" ]; do sleep 0.4; done ) |
       zenity --progress --pulsate --no-cancel --auto-close --title="Radmin VPN" \
-             --text="Preparando Radmin VPN, un momento…  "
+             --text="Starting Radmin VPN, please wait…  "
   ' >/dev/null 2>&1 ) &
 
 # Wait for the service to come up…
@@ -119,7 +119,7 @@ for _ in $(seq 1 90); do
 done
 
 if pgrep -f "RvControlSvc.exe" >/dev/null 2>&1; then
-    # …then keep "Preparando…" up until the real GUI window is actually on screen
+    # …then keep "preparing" up until the real GUI window is actually on screen
     # (Radmin/Wine can take a good while to render it). We look for a viewable
     # RvRvpnGui window taller than 300px = the main window, not the tiny helpers.
     for _ in $(seq 1 60); do
@@ -133,7 +133,7 @@ if pgrep -f "RvControlSvc.exe" >/dev/null 2>&1; then
     done
     sleep 1
     rm -f "$PROGFLAG" 2>/dev/null
-    pkill -u "$RUSER" -f "zenity --progress" 2>/dev/null   # close "Preparando…"
+    pkill -u "$RUSER" -f "zenity --progress" 2>/dev/null   # close "preparing"
     # Gentle focus/raise (window is already painted by Radmin — no windowmap, which
     # would show an unpainted black frame). Best-effort on Wayland.
     runuser -u "$RUSER" -- env $GUIENV sh -c \

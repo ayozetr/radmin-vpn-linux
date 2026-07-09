@@ -28,7 +28,7 @@ done
 # Hold the lock (or the waited-out safety valve). Re-check before prompting.
 if [ -s "$PWFILE" ]; then rmdir "$LOCK" 2>/dev/null; cat "$PWFILE"; exit 0; fi
 
-prompt="${1:-[Radmin VPN] contraseña de administrador:}"
+prompt="${1:-[Radmin VPN] administrator password:}"
 pw=""
 # zenity first (GTK) to match the dialog the bundled AppRun would use, then fallbacks.
 if command -v zenity >/dev/null 2>&1; then

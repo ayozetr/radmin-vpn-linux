@@ -52,7 +52,7 @@ if [ "$(id -u)" -eq 0 ]; then
 else
     # user context (double-click): unpack, then escalate via polkit
     command -v notify-send >/dev/null 2>&1 && \
-        notify-send -a "Radmin VPN" "Radmin VPN" "Preparando… escribe tu contraseña cuando aparezca." 2>/dev/null &
+        notify-send -a "Radmin VPN" "Radmin VPN" "Setting up… enter your password when prompted." 2>/dev/null &
     extract_if_needed
     if command -v pkexec >/dev/null 2>&1; then
         # Detach the escalation into its own session so the polkit dialog and the whole
