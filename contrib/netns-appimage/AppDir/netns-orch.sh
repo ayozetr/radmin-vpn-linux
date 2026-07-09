@@ -48,7 +48,7 @@ rm -f "$PWFILE"                     # start clean (no stale credential)
 # Radmin is single-instance (shared /tmp FIFOs). Clear any stray/leftover instance —
 # an orphaned run.sh from a crashed session keeps a sudo-askpass shim that can pop extra
 # password dialogs, so kill the whole family, not just the service.
-pkill -9 -f "RvControlSvc|RvRvpnGui|rvpn_launcher|tap_bridge|AppRun.radmin" 2>/dev/null
+pkill -9 -f "RvControlSvc|RvRvpnGui|rvpn_launcher|tap_bridge" 2>/dev/null
 ip netns pids "$NS" 2>/dev/null | xargs -r kill -9 2>/dev/null   # anything left in an old netns
 sleep 1
 

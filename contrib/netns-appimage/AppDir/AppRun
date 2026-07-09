@@ -11,8 +11,6 @@
 # the namespace + NAT rules are torn down automatically.
 set -u
 
-RADMIN_NETNS_VERSION=5   # bump to force re-extraction of the cache on upgrade
-
 SELF="$(readlink -f "$0")"
 APPDIR="$(dirname "$SELF")"
 RUSER="${SUDO_USER:-$(id -un)}"
@@ -21,21 +19,23 @@ CACHE="$HOMEDIR/.cache/radmin-vpn-netns"
 
 # Copy the launcher + the inner AppImage to a real dir. The netns setup runs as root
 # while Wine runs as the user; both read from $CACHE, and the inner AppImage self-mounts
-# as the user (no cross-user FUSE issues). The big inner AppImage is only copied when
-# missing; the tiny launcher script is always refreshed.
+# as the user (no cross-user FUSE issues). The big inner AppImage is re-copied only when
+# missing or changed (its size differs), so a rebuilt/upgraded wrapper propagates; the
+# tiny launcher scripts are always refreshed.
 extract_if_needed() {
     mkdir -p "$CACHE"
-    if [ ! -f "$CACHE/RadminVPN.AppImage" ]; then
+    if [ ! -f "$CACHE/RadminVPN.AppImage" ] || \
+       [ "$(stat -c%s "$CACHE/RadminVPN.AppImage" 2>/dev/null)" \
+         != "$(stat -c%s "$APPDIR/RadminVPN.AppImage" 2>/dev/null)" ]; then
         echo "[*] unpacking Radmin AppImage to $CACHE (one-time)…"
         cp "$APPDIR/RadminVPN.AppImage" "$CACHE/RadminVPN.AppImage"
         chmod +x "$CACHE/RadminVPN.AppImage"
         chown "$RUSER":"$RUSER" "$CACHE/RadminVPN.AppImage" 2>/dev/null || true
     fi
-    cp "$APPDIR/netns-orch.sh"    "$CACHE/netns-orch.sh"
+    cp "$APPDIR/netns-orch.sh"     "$CACHE/netns-orch.sh"
     cp "$APPDIR/radmin-askpass.sh" "$CACHE/radmin-askpass.sh"
     chmod +x "$CACHE/netns-orch.sh" "$CACHE/radmin-askpass.sh"
-    echo "$RADMIN_NETNS_VERSION" > "$CACHE/.version"
-    chown "$RUSER":"$RUSER" "$CACHE/netns-orch.sh" "$CACHE/radmin-askpass.sh" "$CACHE/.version" 2>/dev/null || true
+    chown "$RUSER":"$RUSER" "$CACHE/netns-orch.sh" "$CACHE/radmin-askpass.sh" 2>/dev/null || true
 }
 
 RUID="$(id -u "$RUSER")"
