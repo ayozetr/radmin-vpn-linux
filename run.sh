@@ -369,7 +369,18 @@ cd "$RADMIN"
 # Service Wine debug channels: silent by default, +seh backtrace when debugging.
 _svc_winedebug="-all"
 [ "$RVPN_DEBUG" = "1" ] && _svc_winedebug="+seh,+tid,+pid"
-WINEDEBUG="$_svc_winedebug" WINE_LARGE_ADDRESS_AWARE=1 wine rvpn_launcher.exe /run > /tmp/radmin_service.log 2>&1 &
+# Short-circuit reverse DNS of private IPv4 at the glibc layer (issue #16): the
+# ROL connector reverse-resolves each local candidate address (e.g. docker0's
+# 172.17.0.1) via getnameinfo. On a host whose resolver black-holes RFC1918 PTR
+# (systemd-resolved forwarding upstream), that blocks ~5s/attempt and retries past
+# Radmin's ready deadline — "registered but never ready". The call is issued by
+# Wine's Unix side, so no in-Wine IAT/EAT/inline hook can see it; LD_PRELOAD
+# interposes glibc getnameinfo for the whole Wine process instead. Native,
+# non-isolating, touches no system file. Guarded so a missing .so can't break launch.
+_svc_preload=""
+[ -f "$BUILD_DIR/rvpn_dnsfix.so" ] && _svc_preload="LD_PRELOAD=$BUILD_DIR/rvpn_dnsfix.so"
+env $_svc_preload WINEDEBUG="$_svc_winedebug" WINE_LARGE_ADDRESS_AWARE=1 \
+    wine rvpn_launcher.exe /run > /tmp/radmin_service.log 2>&1 &
 
 say "Waiting for service to become ready..."
 SERVICE_START=$(date +%s)
